@@ -1,0 +1,108 @@
+# Chrome Remote Desktop on Wayland (KDE Plasma 6) - Native Session Bridge Guide (RDP-to-X11)
+
+This guide provides a step-by-step walkthrough to solve the long-standing issue of **Chrome Remote Desktop** not showing the active physical screen on **Arch Linux / CachyOS / KDE Plasma 6 (Wayland)**. 
+
+Using this completely local, secure **RDP-to-X11 Bridge** method, you can bypass XDG Desktop Portal permission dialogs, KWallet keyring locks, and aspect ratio stretching to create a **100% stable, auto-starting** remote desktop setup!
+
+---
+
+## 🔍 Why Doesn't the Standard Method Work? (The Wayland Sandbox)
+On Linux, Chrome Remote Desktop initializes a headless virtual X11 server (`:20`). However, due to Wayland's strict security protocols, the active physical KDE Plasma 6 session (`:0`) cannot directly transmit its display frames to this virtual X11 environment. This results in a persistent black screen and an X-shaped mouse cursor.
+
+### 💡 The Solution (Local RDP Bridge):
+1. We run KDE's native high-performance RDP server (`krdp`) on our active physical screen (`:0`).
+2. Inside Chrome Remote Desktop's virtual X11 display (`:20`), we launch a lightweight, full-screen RDP client (`xfreerdp3`) connecting to localhost (`127.0.0.1`).
+3. When you connect from your phone or tablet, you see and fully control your actual active physical Wayland desktop with zero delay!
+
+---
+
+## 🛠️ Step-by-Step Installation
+
+### Step 1: Install Required Packages
+Ensure Chrome Remote Desktop, FreeRDP, and the KDE RDP server are installed on your Arch-based system:
+```bash
+sudo pacman -S chrome-remote-desktop freerdp krdp
+```
+
+### Step 2: Resolve the XDG Desktop Portal App ID Mismatch
+On KDE Plasma 6 Wayland, the screen casting portal (`xdg-desktop-portal`) authenticates incoming remote desktop requests by searching for `org.kde.krdp-server.desktop`. However, package managers usually place it as `org.kde.krdpserver.desktop`, causing the portal to abort the session with an "App info not found" error.
+
+To resolve this mismatch without root privileges, copy the desktop entry with the expected name to your local application directory:
+```bash
+mkdir -p ~/.local/share/applications/
+cp /usr/share/applications/org.kde.krdpserver.desktop ~/.local/share/applications/org.kde.krdp-server.desktop
+```
+Restart the user portal service to refresh the cached desktop entries:
+```bash
+systemctl --user restart xdg-desktop-portal
+```
+
+### Step 3: Bypass KWallet Keyring Locks (Systemd Override)
+By default, `krdpserver` stores credentials in KWallet. When started as a headless systemd user service on boot, KWallet remains locked, preventing the server from reading the password and rejecting incoming connections.
+
+To bypass this securely and pass credentials directly to the server, create a systemd override directory:
+```bash
+mkdir -p ~/.config/systemd/user/app-org.kde.krdpserver.service.d/
+```
+Write the following contents to `~/.config/systemd/user/app-org.kde.krdpserver.service.d/override.conf` (Replace `YOUR_USERNAME` and `YOUR_PASSWORD` with your desired credentials):
+```ini
+[Service]
+ExecStart=
+ExecStart=/usr/bin/krdpserver -u YOUR_USERNAME -p YOUR_PASSWORD
+```
+*Note: If you have a multi-monitor setup and wish to stream only your secondary external screen, append `--monitor 1` to the `ExecStart` command line. For single displays or mirror/clone layouts, keep the default.*
+
+Reload systemd configurations and restart the service:
+```bash
+systemctl --user daemon-reload
+systemctl --user restart app-org.kde.krdpserver.service
+```
+
+### Step 4: Configure the Chrome Remote Desktop Session Script
+We must configure Chrome Remote Desktop to start our local RDP bridge and lock the virtual X11 display resolution to prevent aspect ratio stretching.
+
+Create a file named `~/.chrome-remote-desktop-session` in your home directory and write the following contents (Use the same credentials as in Step 3):
+```bash
+#!/bin/bash
+export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/1000/bus"
+
+# A background loop to permanently lock the virtual X11 resolution to 1080p, preventing stretching
+xrandr -s 1920x1080
+(while true; do xrandr -s 1920x1080; sleep 1; done) &
+
+# Start the window manager
+kwin_x11 &
+sleep 2
+
+# Start the local RDP Bridge in an infinite loop using Software GDI and smart-sizing
+while true; do
+    xfreerdp3 /v:127.0.0.1 /u:YOUR_USERNAME /p:YOUR_PASSWORD /f /cert:ignore /gdi:sw /smart-sizing
+    sleep 2
+done
+```
+Make the script executable:
+```bash
+chmod +x ~/.chrome-remote-desktop-session
+```
+
+### Step 5: Enable and Start the Services
+Finally, enable and start the Chrome Remote Desktop system service for your user:
+```bash
+sudo systemctl enable --now chrome-remote-desktop@YOUR_USERNAME
+```
+
+---
+
+## 📱 Mobile Client Tips (For a Perfect Full-Screen Layout)
+To prevent vertical text stretching or cropping on modern long phone screens:
+1. Open the side menu in your mobile **Chrome Remote Desktop** app.
+2. **Disable** "Resize desktop to fit".
+3. **Enable** "Scale to fit" or "Fit to screen".
+4. **Best Experience:** Turn on screen rotation on your phone and hold it in **Landscape (Horizontal)** mode. You will see a perfect, uncropped, 1:1 full-screen mirror of your active external display with crisp text!
+
+---
+
+## 🌟 Key Advantages: Why This Solution is Safe & Robust
+* **No Root System Modification:** All configurations reside completely inside your user's home directory (`~`). It is fully immune to system updates and will never break the OS.
+* **Self-Healing:** If any connection abruptly drops or freezes, systemd immediately detects it and restarts the bridge cleanly in the background.
+* **Set and Forget:** The bridge starts automatically on system boot. There is no need to manually open Google Chrome or run terminal commands ever again!
