@@ -1,0 +1,108 @@
+# Wayland (KDE Plasma 6) üzerinde Chrome Uzaktan Masaüstü Köprüsü (RDP-to-X11 Bridge)
+
+Bu rehber, **Arch Linux / CachyOS / KDE Plasma 6 (Wayland)** kullanan cihazlarda (örneğin Lenovo Legion Go, PC vb.) **Chrome Uzaktan Masaüstü (Chrome Remote Desktop)** uygulamasının çalışmama sorununu çözen, tamamen yerel ve son derece güvenli **RDP-to-X11 Köprüleme (Bridge)** yöntemini adım adım anlatmaktadır.
+
+İnternetteki çoğu kaynak Wayland üzerinde Chrome Uzaktan Masaüstü'nün çalışmadığını iddia eder. Geliştirdiğimiz bu yöntemle, güvenlik portalı engellerini, KWallet kilitlenmelerini ve ekran esneme sorunlarını aşarak **%100 kararlı ve otomatik başlayan** bir uzak masaüstü altyapısı kurabilirsiniz!
+
+---
+
+## 🔍 Neden Klasik Yöntem Çalışmıyor? (Wayland Sınırı)
+Chrome Uzaktan Masaüstü, Linux üzerinde sanal bir X11 ekranı (`:20`) oluşturur. Ancak modern Wayland masaüstünüz (KDE Plasma 6) güvenlik protokolleri gereği bu sanal ekranın fiziksel masaüstünüze erişmesine izin vermez. Görüntüyü yakalamaya çalıştığında kilitlenir veya siyah ekran/çarpı fare imleci verir.
+
+### 💡 Bizim Çözümümüz (Köprü Yöntemi):
+1. KDE'nin kendi resmi yüksek performanslı RDP sunucusunu (`krdp`) fiziksel ekranımızda (`:0`) çalıştırıyoruz.
+2. Chrome Uzaktan Masaüstü'nün sanal ekranı (`:20`) içinde, yerel localhost'a (`127.0.0.1`) bağlanan tam ekran hafif bir RDP istemcisi (`xfreerdp3`) çalıştırıyoruz.
+3. Bu sayede, telefonunuzdan bağlandığınızda sanal ekran üzerinden doğrudan canlı, gecikmesiz og akıcı Wayland masaüstünüzü yönetebiliyorsunuz!
+
+---
+
+## 🛠️ Kurulum Adımları (Adım Adım)
+
+### Adım 1: Gerekli Paketlerin Kurulması
+Sisteminizde Chrome Uzaktan Masaüstü, FreeRDP ve KDE RDP sunucusunun kurulu olduğundan emin olun:
+```bash
+sudo pacman -S chrome-remote-desktop freerdp krdp
+```
+
+### Adım 2: Güvenlik Portalı Uygulama Kimliği Uyuşmazlığını Çözmek
+KDE Plasma 6 Wayland üzerinde ekran paylaşım portalları (`xdg-desktop-portal`), uzaktan masaüstü sunucusunu yetkilendirirken `org.kde.krdp-server` kimlik dosyasını arar. Ancak paket yöneticileri bu dosyayı `org.kde.krdpserver.desktop` ismiyle kaydettiği için portal bağlantıyı doğrudan engeller.
+
+Bu uyuşmazlığı gidermek için kök (root) yetkilerine ihtiyaç duymadan yerel uygulama dizininize doğru isimle bir kopya oluşturun:
+```bash
+mkdir -p ~/.local/share/applications/
+cp /usr/share/applications/org.kde.krdpserver.desktop ~/.local/share/applications/org.kde.krdp-server.desktop
+```
+Ardından güvenlik portalının önbelleğini yenilemek için portalı yeniden başlatın:
+```bash
+systemctl --user restart xdg-desktop-portal
+```
+
+### Adım 3: KWallet Kilitlenmesini Aşmak (Systemd Override)
+`krdpserver` varsayılan olarak kullanıcı şifresini KWallet (KDE Cüzdan) içinde saklar. Sunucu arka planda bir sistem servisi olarak başladığında KWallet kilitli olduğu için şifreyi okuyamaz ve bağlantıyı reddeder.
+
+Bunu tamamen aşmak ve şifreyi güvenli bir şekilde sunucuya doğrudan parametre olarak geçmek için bir systemd override dosyası oluşturun:
+```bash
+mkdir -p ~/.config/systemd/user/app-org.kde.krdpserver.service.d/
+```
+Aşağıdaki içeriği `~/.config/systemd/user/app-org.kde.krdpserver.service.d/override.conf` dosyasına yazın (Kullanıcı adınızı ve belirlemek istediğiniz RDP şifresini güncelleyin):
+```ini
+[Service]
+ExecStart=
+ExecStart=/usr/bin/krdpserver -u KULLANICI_ADINIZ -p SIFRENIZ
+```
+*Not: Eğer çift ekran kullanıyorsanız ve sadece harici ekranı yansıtmak istiyorsanız komutun sonuna `--monitor 1` ekleyebilirsiniz. Tek ekran veya aynalama modunda varsayılan kalsın.*
+
+Ayarları sisteme yükleyin ve servisi yeniden başlatın:
+```bash
+systemctl --user daemon-reload
+systemctl --user restart app-org.kde.krdpserver.service
+```
+
+### Adım 4: Chrome Uzaktan Masaüstü Oturum Betiğini Oluşturmak
+Chrome Uzaktan Masaüstü'nün sanal X11 ekranı açıldığında, arka planda yerel köprü bağlantımızı otomatik olarak kurması ve ekran çözünürlüğünü kilitlemesi gerekir.
+
+Ev dizininizde `~/.chrome-remote-desktop-session` adında bir dosya oluşturun ve içine şu kodları yazın (Kullanıcı adı ve şifrenizi Adım 3'tekiyle aynı yapın):
+```bash
+#!/bin/bash
+export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/1000/bus"
+
+# Sanal ekran boyutunu 1080p seviyesinde sabitleyen ve esnemeyen kilit döngüsü
+xrandr -s 1920x1080
+(while true; do xrandr -s 1920x1080; sleep 1; done) &
+
+# Pencere yöneticisini başlat
+kwin_x11 &
+sleep 2
+
+# Yerel RDP Köprüsünü sonsuz döngüde başlat (Yazılımsal GDI ve akıllı ölçekleme ile)
+while true; do
+    xfreerdp3 /v:127.0.0.1 /u:KULLANICI_ADINIZ /p:SIFRENIZ /f /cert:ignore /gdi:sw /smart-sizing
+    sleep 2
+done
+```
+Dosyaya çalışma izni verin:
+```bash
+chmod +x ~/.chrome-remote-desktop-session
+```
+
+### Adım 5: Servisleri Etkinleştirmek ve Başlatmak
+Son olarak Chrome Uzaktan Masaüstü sistem servisini kullanıcınız için etkinleştirin ve başlatın:
+```bash
+sudo systemctl enable --now chrome-remote-desktop@KULLANICI_ADINIZ
+```
+
+---
+
+## 📱 Telefon / İstemci Tarafındaki İpuçları (Kusursuz Görüntü İçin)
+Bağlantı kurulduğunda görüntünün esnemesini veya dikeyde kaymasını tamamen önlemek için:
+1. Telefonunuzdaki **Chrome Remote Desktop** uygulamasında menüyü açın.
+2. **"Masaüstünü sığacak şekilde yeniden boyutlandır" (Resize desktop to fit)** seçeneğini **KAPATIN**.
+3. **"Ekrana sığdır" (Scale to fit)** seçeneğini **AÇIN**.
+4. **En İyi Deneyim İçin:** Telefonunuzun ekran döndürmesini açıp telefonu **yan (yatay) çevirin**. Harici monitörünüzün birebir aynısını, sıfır esneme ve sıfır kırpılmayla devasa bir tam ekran olarak göreceksiniz!
+
+---
+
+## 🌟 Neden Bu Yöntem Çok Güvenli ve Bakım Gerektirmez?
+* **Sıfır Çekirdek Müdahalesi:** Sistem dosyalarına veya işletim sisteminin çekirdeğine (kernel) dokunulmaz. Tüm ayarlar ev dizininizdedir. Sistem güncellemelerinden etkilenmez.
+* **Kendi Kendini Onarır:** Olası bir donma durumunda systemd servisleri algılar ve saniyeler içinde arka planda bağlantıyı otomatik olarak yeniler.
+* **Kur ve Unut:** Bilgisayarınızı her açtığınızda arka planda kendiliğinden sessizce başlar. Ekstra hiçbir tarayıcı açmanıza veya komut yazmanıza gerek yoktur!
