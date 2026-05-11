@@ -171,3 +171,4 @@ echo -e "${YELLOW}ADIM 7: Servisi Yeniden Başlatma${NC}"
 systemctl restart bluetooth
 echo -e "${GREEN}Bluetooth servisi yeniden başlatıldı.${NC}\n"
 echo -e "${CYAN}İŞLEM TAMAMLANDI!${NC} Cihazınızın tuşlarına basarak Linux'a anında bağlanmasını sağlayabilirsiniz."
+ 
